@@ -1,12 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows.Forms;
 using System.Windows.Forms.DataVisualization.Charting;
 using Akka.Actor;
 
 namespace ChartApp.Actors
 {
-    public class ChartingActor : ReceiveActor
+    public class ChartingActor : ReceiveActor, IWithUnboundedStash
     {
         public const int MaxPoints = 250;
         private int xPosCounter = 0;
@@ -24,20 +25,51 @@ namespace ChartApp.Actors
         private readonly Chart _chart;
         private Dictionary<string, Series> _seriesIndex;
 
-        public ChartingActor(Chart chart) : this(chart, new Dictionary<string, Series>())
+        private readonly Button _pauseButton;
+
+        public ChartingActor(Chart chart, Button pauseButton) : this(chart, new Dictionary<string, Series>(), pauseButton)
         {
 
         }
 
-        public ChartingActor(Chart chart, Dictionary<string, Series> seriesIndex)
+        public ChartingActor(Chart chart, Dictionary<string, Series> seriesIndex, Button pauseButton)
         {
             _chart = chart;
             _seriesIndex = seriesIndex;
+            _pauseButton = pauseButton;
 
+            Charting();
+        }
+
+        private void Charting()
+        {
             Receive<InitializeChart>(ic => HandleInitialize(ic));
             Receive<AddSeries>(addSeries => HandleAddSeries(addSeries));
             Receive<RemoveSeries>(removeSeries => HandleRemoveSeries(removeSeries));
             Receive<Metric>(metric => HandleMetrics(metric));
+            Receive<TogglePause>(pause =>
+            {
+                SetPauseButtonText(true);
+                BecomeStacked(Paused);
+            });
+        }
+
+        private void Paused()
+        {
+            Receive<InitializeChart>(ic => Stash.Stash());
+            Receive<AddSeries>(addSeries => Stash.Stash());
+            Receive<Metric>(metric => HandleMetricsPaused(metric));
+            Receive<TogglePause>(pause =>
+            {
+                SetPauseButtonText(false);
+                UnbecomeStacked();
+                Stash.UnstashAll();
+            });
+        }
+
+        private void SetPauseButtonText(bool paused)
+        {
+            _pauseButton.Text = !paused ? "PAUSE ||" : "RESUME ->";
         }
 
         public class AddSeries
@@ -59,6 +91,8 @@ namespace ChartApp.Actors
 
             public string Series { get; }
         }
+
+        public class TogglePause { }
 
         private void HandleInitialize(InitializeChart ic)
         {
@@ -129,6 +163,19 @@ namespace ChartApp.Actors
             }
         }
 
+        private void HandleMetricsPaused(Metric metric)
+        {
+            if (!string.IsNullOrEmpty(metric.Series)
+                && _seriesIndex.ContainsKey(metric.Series))
+            {
+                var series = _seriesIndex[metric.Series];
+                // set the Y value to zero when we're paused
+                series.Points.AddXY(xPosCounter++, 0.0d);
+                while (series.Points.Count > MaxPoints) series.Points.RemoveAt(0);
+                SetChartBoundaries();
+            }
+        }
+
         private void SetChartBoundaries()
         {
             double maxAxisX, maxAxisY, minAxisX, minAxisY = 0.0d;
@@ -147,5 +194,7 @@ namespace ChartApp.Actors
                 area.AxisY.Maximum = maxAxisY;
             }
         }
+
+        public IStash Stash { get; set; }
     }
 }
