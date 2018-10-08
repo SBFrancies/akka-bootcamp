@@ -6,9 +6,10 @@ using Akka.Actor;
 
 namespace ChartApp.Actors
 {
-    public class ChartingActor : UntypedActor
+    public class ChartingActor : ReceiveActor
     {
-        #region Messages
+        public const int MaxPoints = 250;
+        private int xPosCounter = 0;
 
         public class InitializeChart
         {
@@ -20,31 +21,44 @@ namespace ChartApp.Actors
             public Dictionary<string, Series> InitialSeries { get; private set; }
         }
 
-        #endregion
-
         private readonly Chart _chart;
         private Dictionary<string, Series> _seriesIndex;
 
         public ChartingActor(Chart chart) : this(chart, new Dictionary<string, Series>())
         {
+
         }
 
         public ChartingActor(Chart chart, Dictionary<string, Series> seriesIndex)
         {
             _chart = chart;
             _seriesIndex = seriesIndex;
+
+            Receive<InitializeChart>(ic => HandleInitialize(ic));
+            Receive<AddSeries>(addSeries => HandleAddSeries(addSeries));
+            Receive<RemoveSeries>(removeSeries => HandleRemoveSeries(removeSeries));
+            Receive<Metric>(metric => HandleMetrics(metric));
         }
 
-        protected override void OnReceive(object message)
+        public class AddSeries
         {
-            if (message is InitializeChart)
+            public AddSeries(Series series)
             {
-                var ic = message as InitializeChart;
-                HandleInitialize(ic);
+                Series = series;
             }
+
+            public Series Series { get; }
         }
 
-        #region Individual Message Type Handlers
+        public class RemoveSeries
+        {
+            public RemoveSeries(string series)
+            {
+                Series = series;
+            }
+
+            public string Series { get; }
+        }
 
         private void HandleInitialize(InitializeChart ic)
         {
@@ -56,6 +70,13 @@ namespace ChartApp.Actors
 
             //delete any existing series
             _chart.Series.Clear();
+
+            // set the axes up
+            var area = _chart.ChartAreas[0];
+            area.AxisX.IntervalType = DateTimeIntervalType.Number;
+            area.AxisY.IntervalType = DateTimeIntervalType.Number;
+
+            SetChartBoundaries();
 
             //attempt to render the initial chart
             if (_seriesIndex.Any())
@@ -69,6 +90,62 @@ namespace ChartApp.Actors
             }
         }
 
-        #endregion
+        private void HandleAddSeries(AddSeries series)
+        {
+            if (!string.IsNullOrEmpty(series.Series.Name) &&
+                !_seriesIndex.ContainsKey(series.Series.Name))
+            {
+                _seriesIndex.Add(series.Series.Name, series.Series);
+                _chart.Series.Add(series.Series);
+                SetChartBoundaries();
+            }
+        }
+
+        private void HandleRemoveSeries(RemoveSeries series)
+        {
+            if (!string.IsNullOrEmpty(series.Series) &&
+                _seriesIndex.ContainsKey(series.Series))
+            {
+                _seriesIndex.Remove(series.Series);
+                _chart.Series.RemoveAt(_chart.Series.IndexOf(series.Series));
+                SetChartBoundaries();
+            }
+        }
+
+        private void HandleMetrics(Metric metric)
+        {
+            if (!string.IsNullOrEmpty(metric.Series) &&
+                _seriesIndex.ContainsKey(metric.Series))
+            {
+                var series = _seriesIndex[metric.Series];
+                series.Points.AddXY(xPosCounter++, metric.CounterValue);
+
+                while (series.Points.Count > MaxPoints)
+                {
+                    series.Points.RemoveAt(0);
+                }
+
+                SetChartBoundaries();
+            }
+        }
+
+        private void SetChartBoundaries()
+        {
+            double maxAxisX, maxAxisY, minAxisX, minAxisY = 0.0d;
+            var allPoints = _seriesIndex.Values.SelectMany(series => series.Points).ToList();
+            var yValues = allPoints.SelectMany(point => point.YValues).ToList();
+            maxAxisX = xPosCounter;
+            minAxisX = xPosCounter - MaxPoints;
+            maxAxisY = yValues.Count > 0 ? Math.Ceiling(yValues.Max()) : 1.0d;
+            minAxisY = yValues.Count > 0 ? Math.Floor(yValues.Min()) : 0.0d;
+            if (allPoints.Count > 2)
+            {
+                var area = _chart.ChartAreas[0];
+                area.AxisX.Minimum = minAxisX;
+                area.AxisX.Maximum = maxAxisX;
+                area.AxisY.Minimum = minAxisY;
+                area.AxisY.Maximum = maxAxisY;
+            }
+        }
     }
 }
